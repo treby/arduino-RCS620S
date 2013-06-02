@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include "Wprogram.h"
+#include "Arduino.h"
 #include "Print.h"
 #include "HardwareSerial.h"
 
@@ -42,6 +42,28 @@
 RCS620S::RCS620S()
 {
     this->timeout = RCS620S_DEFAULT_TIMEOUT;
+}
+
+int RCS620S::reset(void)
+{
+    int ret;
+    uint8_t response[RCS620S_MAX_RW_RESPONSE_LEN];
+    uint16_t responseLen;
+
+    /* Reset */
+    ret = rwCommand((const uint8_t*)"\xd4\x18\x01", 3,
+                    response, &responseLen);
+    if (!ret || (responseLen != 2) ||
+        (memcmp(response, "\xd5\x19", 2) != 0)) {
+        return 0;
+    }
+    
+    /* Send ACK */
+    writeSerial((const uint8_t*)"\x00\x00\xff\x00\xff\x00", 6);
+    
+    delay(10);
+
+    return 1;
 }
 
 int RCS620S::initDevice(void)
@@ -101,6 +123,45 @@ int RCS620S::polling(uint16_t systemCode)
     return 1;
 }
 
+int RCS620S::emulating(
+    uint16_t systemCode,
+    uint8_t idm[],
+    uint8_t pmm[])
+ {
+    if(Serial.available())
+    {
+        while(Serial.available())
+            Serial.read();
+    }
+
+    int ret, i;
+    uint8_t buf[RCS620S_MAX_RW_RESPONSE_LEN];
+
+    if(idm == NULL) idm = this->idm;
+    if(pmm == NULL) pmm = this->pmm;
+
+    /* TgInitTarget */
+    memcpy(buf, "\xd4\x8c\x00\x00\x04\xaa\xbb\xcc\x40", 9);
+    for ( i = 0; i < 8; i++ ) {				// Set IDm and PMm
+        buf[ 9 + i ] = idm[i];
+        buf[ 17 + i ] = pmm[i];
+        buf[ 27 + i ] = idm[i];
+    }
+
+    buf[25] = (uint8_t)((systemCode >> 8) & 0xff);
+    buf[26] = (uint8_t)((systemCode >> 0) & 0xff);
+
+    buf[37] = 0;
+    buf[38] = 0;
+
+    ret = transitCommand(buf, 37);
+    if (!ret) {
+        return 0;
+    }
+
+    return 1;
+}
+
 int RCS620S::cardCommand(
     const uint8_t* command,
     uint8_t commandLen,
@@ -135,6 +196,52 @@ int RCS620S::cardCommand(
 
     *responseLen = (uint8_t)(buf[3] - 1);
     memcpy(response, buf + 4, *responseLen);
+
+    return 1;
+}
+
+int RCS620S::transitCommand(
+    const uint8_t* command,
+    uint16_t commandLen)
+{
+    int ret;
+    uint8_t buf[9];
+
+    flushSerial();
+
+    uint8_t dcs = calcDCS(command, commandLen);
+
+    /* transmit the command packet */
+    buf[0] = 0x00;
+    buf[1] = 0x00;
+    buf[2] = 0xff;
+    if (commandLen <= 255) {
+         /* Normal Frame */
+         buf[3] = commandLen;
+         buf[4] = (uint8_t) -buf[3];    // LCS
+         writeSerial(buf, 5);
+    } else {
+         /* Extended Frame */
+         buf[3] = 0xff;
+         buf[4] = 0xff;
+         buf[5] = (uint8_t)((commandLen >> 8) & 0xff);
+         buf[6] = (uint8_t)((commandLen >> 0) & 0xff);
+         buf[7] = (uint8_t)-(buf[5] + buf[6]);
+         writeSerial(buf, 8);
+    }
+
+    /* main data */
+    writeSerial(command, commandLen);
+    buf[0] = dcs;
+    buf[1] = 0x00;
+    writeSerial(buf, 2);
+
+    /* receive an ACK */
+    ret = readSerial(buf, 6);
+    if (!ret || (memcmp(buf, "\x00\x00\xff\x00\xff\x00", 6) != 0)) {
+         cancel();                  // transit ACK
+         return 0;
+    }
 
     return 1;
 }

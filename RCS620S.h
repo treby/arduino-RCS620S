@@ -26,12 +26,20 @@ public:
     RCS620S();
 
     int initDevice(void);
+    int reset(void);
     int polling(uint16_t systemCode = 0xffff);
+    int emulating(
+        uint16_t systemCode,
+        uint8_t idm[],
+        uint8_t pmm[]);
     int cardCommand(
         const uint8_t* command,
         uint8_t commandLen,
         uint8_t response[RCS620S_MAX_CARD_RESPONSE_LEN],
         uint8_t* responseLen);
+    int transitCommand(
+        const uint8_t* command,
+        uint16_t commandLen);
     int rfOff(void);
 
     int push(
